@@ -1,157 +1,159 @@
 require("dotenv").config();
-
 const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const cors = require('cors')
+const cors = require("cors");
+const bodyParser = require("body-parser");
 
 const app = express();
+app.use(cors());
+app.use(bodyParser.json());
 
-app.use(express.json())
-app.use(cors())
+// models
+const User = require("./models/User");
 
-const User = require('./models/User')
+// Config JSON response
+app.use(express.json());
 
+// Open Route
 app.get("/", (req, res) => {
-  res.status(200).json({ msg: "bem vindo" });
+  res.status(200).json({ msg: "Bem vindo a API!" });
+});
+
+// Private Route
+app.get("/user/:id", checkToken, async (req, res) => {
+  const id = req.params.id;
+
+  // check if user exists
+  const user = await User.findById(id, "-password");
+
+  if (!user) {
+    return res.status(404).json({ msg: "Usuário não encontrado!" });
+  }
+
+  res.status(200).json({ user });
 });
 
 function checkToken(req, res, next) {
-    const authHeader = req.headers['authorization']
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
 
-    const token = authHeader && authHeader.split(" ")[1]
+  if (!token) return res.status(401).json({ msg: "Acesso negado!" });
 
-    if (!token) {
-        return res.status(401).json({msg: "Acesso negado"})
-    }
+  try {
+    const secret = process.env.SECRET;
 
-    try {
+    jwt.verify(token, secret);
 
-        const secret = process.env.SECRET
-        jwt.verify(token, secret)
-
-        next()
-
-    } catch(error) {
-        console.log(error)
-
-        res.status(400).json({msg: "Token Invalido"})
-    }
+    next();
+  } catch (err) {
+    res.status(400).json({ msg: "O Token é inválido!" });
+  }
 }
 
-app.get('/user/:id', checkToken, async (req, res) => {
-    const id = req.params.id
-    
-    const user = await User.findById(id, '-password')
-    
-    if (!user) {
-        return res.status(404).json({ msg: "Usuario não encontrado" })
-    }
-    
-    res.status(200).json({ user })
+app.post("/auth/register", async (req, res) => {
+  const { name, email, password, confirmpassword } = req.body;
 
+  // validations
+  if (!name) {
+    return res.status(422).json({ msg: "O nome é obrigatório!" });
+  }
 
-})
+  if (!email) {
+    return res.status(422).json({ msg: "O email é obrigatório!" });
+  }
 
-app.post('/auth/register', async (req, res) => {
-    const { name, email, password, confirmPassword } = req.body
+  if (!password) {
+    return res.status(422).json({ msg: "A senha é obrigatória!" });
+  }
 
-    if(!name) {
-        return res.status(422).json({msg: "O nome é obrigatório"})
-    }
+  if (password !== confirmpassword) {
+    return res
+      .status(422)
+      .json({ msg: "As senhas precisam ser iguais!" });
+  }
 
-    if(!email) {
-        return res.status(422).json({msg: "O email é obrigatório"})
-    }
+  // check if user exists
+  const userExists = await User.findOne({ email: email });
 
-    if(!password) {
-        return res.status(422).json({msg: "A senha é obrigatória"})
-    }
+  if (userExists) {
+    return res.status(422).json({ msg: "Por favor, utilize outro e-mail!" });
+  }
 
-    if(password !== confirmPassword) {
-        return res.status(422).json({msg: "A senhas devem ser iguais!"})
-    }
+  // create password
+  const salt = await bcrypt.genSalt(12);
+  const passwordHash = await bcrypt.hash(password, salt);
 
-    const userExists = await User.findOne({ email: email })
+  // create user
+  const user = new User({
+    name,
+    email,
+    passwordHash,
+  });
 
-    if(userExists) {
-        return res.status(422).json({msg: "Por favor, utilize outro email!"})
-    }
+  try {
+    await user.save();
 
-    const salt = await bcrypt.genSalt(12)
+    res.status(201).json({ msg: "Usuário criado com sucesso!" });
+  } catch (error) {
+    res.status(500).json({ msg: error });
+  }
+});
 
-    const passwordHash = await bcrypt.hash(password, salt)
+app.post("/auth/login", async (req, res) => {
+  const { email, password } = req.body;
 
-    const user = new User({
-        name, 
-        email, 
-        password: passwordHash
-    })
+  // validations
+  if (!email) {
+    return res.status(422).json({ msg: "O email é obrigatório!" });
+  }
 
-    try {
-        await user.save()
+  if (!password) {
+    return res.status(422).json({ msg: "A senha é obrigatória!" });
+  }
 
-        res.status(201).json({msg: "Usuario criado com sucesso!"})
+  // check if user exists
+  const user = await User.findOne({ email: email });
 
+  if (!user) {
+    return res.status(404).json({ msg: "Usuário não encontrado!" });
+  }
 
-    } catch(error) {
-        console.log(error)
+  // check if password match
+  const checkPassword = () => bcrypt.compare(password, user.password, user.email);
 
-        res.status(500).json({msg: "Houve um problema no servidor, tente novamente mais tarde"})
-    }
-})
+  if (!checkPassword) {
+    return res.status(422).json({ msg: "Senha inválida" });
+  }
 
-app.post('/auth/login', async (req, res) => {
-    const { email, password } = req.body
+  try {
+    const secret = process.env.SECRET;
 
-    if(!email) {
-        return res.status(422).json({msg: "O email é obrigatório"})
-    }
+    const token = jwt.sign(
+      {
+        id: user._id,
+      },
+      secret
+    );
 
-    if(!password) {
-        return res.status(422).json({msg: "A senha é obrigatória"})
-    }
+    res.status(200).json({ msg: "Autenticação realizada com sucesso!", token });
+  } catch (error) {
+    res.status(500).json({ msg: error });
+  }
+});
 
-    const user = await User.findOne({ email: email })
+const dbUser = process.env.DB_USER;
+const dbPassword = process.env.DB_PASS;
 
-    if(!user) {
-        return res.status(404).json({msg: "Usuario não encontrado"})
-    }
-
-    const checkPassword = await bcrypt.compare(password, user.password)
-
-    if(!checkPassword) {
-        return res.status(422).json({msg: "Senha invalida"})
-    }
-
-    try {
-
-        const secret = process.env.SECRET 
-        const token = jwt.sign({
-            id: user._id,  
-        },
-        secret,
-        )
-
-        res.status(200).json({msg: "Autenticação efetuada com sucesso", token})
-
-    } catch(error) {
-        console.log(error)
-
-        res.status(500).json({msg: "Houve um problema no servidor, tente novamente mais tarde"})
-    }
-})
-
-const dbUser = process.env.DB_USER
-const dbPassword = process.env.DB_PASS
-
-mongoose.set('strictQuery', false)
+mongoose.set('strictQuery', false);
 
 mongoose
-  .connect(`mongodb+srv://${dbUser}:${dbPassword}@cluster0.w4gpfsf.mongodb.net/?retryWrites=true&w=majority`)
+  .connect(
+    `mongodb+srv://${dbUser}:${dbPassword}@cluster0.w4gpfsf.mongodb.net/?retryWrites=true&w=majority`
+  )
   .then(() => {
-    app.listen(4000);
-    console.log("Server running");
+    console.log("Conectou ao banco!");
+    app.listen(3000);
   })
   .catch((err) => console.log(err));
